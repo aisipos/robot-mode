@@ -27,22 +27,42 @@
 ;;
 ;; You can participate by sending pull requests to https://github.com/sakari/robot-mode
 
+(require 's)
+
+(defvar robot-keyword-word-separator " " "Character that is used to distinguish words in keywords, underscore or space should be used")
+
 (setq robot-mode-keywords
-      '(
-	;;normal comment
-	("#.*" . font-lock-comment-face)
-	;;Section headers
-	("\\*\\*\\* [^\\*]+ \\*\\*\\*" . font-lock-keyword-face)
-	;;keyword definitions
-	("^[^ \t\n].+" . font-lock-function-name-face)
-	;;Variables
-	("\\(\\$\\|@\\){\\( ?[^ }$]\\)+}" 0 font-lock-variable-name-face t)
-	;;tags etc
-	("\\[[^\]]+\\]+" . font-lock-constant-face)
-	;;comment kw
-	("comment  .*" . font-lock-comment-face)
-	)
-      )
+      (let* (
+             (words1 '("..." ":FOR" "AND" "ELSE" "IF" "IN RANGE" "IN"))
+             (words2 '("Documentation" "Library" "Resource" "Suite Setup" "Suite Teardown"
+                       "Test Timeout" "Variables" "Test Setup" "Test Teardown"))
+             (words1-regexp (concat (regexp-opt words1) "\\s-"))
+             (words2-regexp (concat "^" (regexp-opt words2 'words)))
+             ;; construct regexp for variable face
+             (variable-not-allowed-characters "[^ \t{}\\$]")
+             (variable-allowed-pattern (format "\\( ?%s\\)*" variable-not-allowed-characters))
+             (variable-pattern (format "[@\\$]{%s\\(:?[@\\$]{%s+}\\)?%s}" variable-allowed-pattern
+                                       variable-not-allowed-characters variable-allowed-pattern))
+             )
+        `(
+          ;;normal comment
+          ("#.*" . font-lock-comment-face)
+          ;;FOR, IF etc
+          (,words1-regexp . font-lock-type-face)
+          ;;Suite setup keywords
+          (,words2-regexp . font-lock-builtin-face)
+          ;;Section headers
+          ("\\*\\*\\* ?[^\\*]+ ?\\*\\*\\*" . font-lock-keyword-face)
+          ;;keyword definitions
+          ("^[^ \t\n\$]+" . font-lock-function-name-face)
+          ;;Variables (use 0 operator with t argument instead of . to allow variable highlighting inside comments)
+          ( ,variable-pattern . font-lock-variable-name-face)
+          ;;tags etc
+          ("\\[[^\]]+\\]+" . font-lock-constant-face)
+          ;;comment kw
+          ("[Cc]omment\\(  \\|\t\\).*" . font-lock-comment-face)
+          )
+        ))
 
 (defun robot-indent()
   "Returns the string used in indation.
@@ -58,20 +78,43 @@ not set 4 spaces are used.
    )
  )
 
+(defun robot-keyword-start-point()
+  (save-excursion (re-search-backward "^\\|\\(  \\)\\|\t"))
+  )
+
+(defun robot-keyword-end-point()
+  (save-excursion (re-search-forward "$\\|\\(  \\)\\|\t"))
+  )
+
+(defun prefix-is-variable(kw)
+  (or (string-prefix-p "@" kw)
+      (string-prefix-p "$" kw))
+  )
+
+(defun variable-prefix-has-ending-bracket(prefix)
+  (string-suffix-p "}" prefix)
+  )
+
+(defun variable-prefix-trim(prefix)
+  (if (variable-prefix-has-ending-bracket prefix)
+      (substring prefix 0 -1)
+    prefix
+    )
+  )
 
 (defun robot-mode-kw-at-point()
   "Return the robot keyword (or possibly infix variable) around the current point in buffer"
   (defun extract-kw (str)
     (defun trim (str)
-      (replace-regexp-in-string "\\(^\s+\\)\\|\\(\s+$\\)\\|\n$" "" str))
+      (s-trim-left (replace-regexp-in-string "\\(^\s+\\)\\|\n$" "" str)))
     (defun cut-kw (str)
-      (replace-regexp-in-string "  .*$" "" str))
+      (replace-regexp-in-string "\\(  \\|\t\\).*$" "" str))
     (defun cut-bdd (str) 
       (replace-regexp-in-string "^\\(given\\)\\|\\(then\\)\\|\\(when\\)\\s*" "" str))
     (cut-kw (cut-bdd (trim str)))
     )
-  (let* ((kw-end (save-excursion (re-search-forward "$\\|\\(  \\)")))
-	 (kw-start (save-excursion (re-search-backward "^\\|\\(  \\)")))
+  (let* ((kw-end (robot-keyword-end-point))
+         (kw-start (robot-keyword-start-point))
 	 )
     (save-excursion 
       (let* ((variable-end (re-search-forward "[^}]*}" kw-end t))
@@ -119,14 +162,36 @@ not set 4 spaces are used.
 This function is bound to \\[robot-mode-complete].
 "
   (interactive (list (robot-mode-kw-at-point)))
-  (let ((kw-regexp (robot-mode-make-kw-regexp kw-prefix)))
-    (defun normalize-candidate-kw(kw) 
-      (replace-regexp-in-string "_" " " kw)
+  (let ((kw-regexp (robot-mode-make-kw-regexp (variable-prefix-trim kw-prefix))))
+    (defun normalize-candidate-kw(kw prefix) 
+      (defun capitalize-first-character(kw)
+        "Capitalize first character of a word, don't affect rest of string"
+        (when (and kw (> (length kw) 0))
+          (let ((first-char (substring kw 0 1))
+                (rest-str   (substring kw 1)))
+            (concat (capitalize first-char) rest-str)))
+        )
+      ;; Check whether kw candidate is a keyword or a variable
+      (if (prefix-is-variable kw)
+          ;; If is variable, delete closing bracket from candidate if it already exists in prefix
+          (if (variable-prefix-has-ending-bracket prefix)
+              (variable-prefix-trim kw)
+            kw
+            )
+        (let ((word-separator (if (string-match-p "_" kw-prefix)
+                                 "_"
+                               (if (string-match-p " " kw-prefix)
+                                   " "
+                                 robot-keyword-word-separator))))
+          ;; If is keyword split to words, capitalize and join words with defined character
+          (s-join word-separator (mapcar 'capitalize-first-character (s-split-words kw)))
+          )
+        )
       )
     (let ((possible-completions ()))
       (let ((enable-recursive-minibuffers t)
 	    (pick-next-buffer nil)
-	    (kw-full (format "^ *\\(def +\\)?\\([^\177 \n]*%s[^\177\n]*?\\)(?\177\\(\\(.+\\)\\)?" kw-regexp)))
+	    (kw-full (format "^\\s-*\\(def +\\)?\\(%s[^\177\n]*?\\)(?\177\\(\\(.+\\)\\)?" kw-regexp)))
 	(save-excursion
 	  (visit-tags-table-buffer pick-next-buffer)
 	  (set 'pick-next-buffer t)
@@ -136,18 +201,24 @@ This function is bound to \\[robot-mode-complete].
 		(let ((got (buffer-substring 
 			    (or (match-beginning 4) (match-beginning 2)) 
 			    (or (match-end 4) (match-end 2)))))
-		  (add-to-list 'possible-completions (normalize-candidate-kw got) )
+		  (add-to-list 'possible-completions (normalize-candidate-kw got kw-prefix))
 		  )
 	      )
 	    )
 	  )
 	)
       (cond ((not possible-completions) (message "No completions found!"))
-	    ((= (length possible-completions) 1) 
-	     (insert (substring (car possible-completions) (length kw-prefix))))
-	    (t (with-output-to-temp-buffer "*Robot KWs*"
-		   (display-completion-list possible-completions kw-prefix))
-	       )
+	    (t
+       (let* ((kw-end (robot-keyword-end-point))
+              (kw-start (robot-keyword-start-point))
+              (completion-ignore-case t)
+              ;; Decrement kw-end by one if completion is variable and prefix already has closing bracket
+              (kw-end (if (variable-prefix-has-ending-bracket kw-prefix)
+                          (- kw-end 1)
+                        kw-end))
+              )
+         (completion-in-region (+ kw-start 1) kw-end possible-completions))
+         )
 	    )
       )
     )
@@ -253,7 +324,7 @@ Set indent-tabs-mode to non-nil to use tabs for indantation. If indent-tabs-mode
 c-basic-offset defines the amount of spaces that are inserted when indenting.
 "
   (require 'etags)
-  (set (make-local-variable 'font-lock-defaults) '(robot-mode-keywords))
+  (setq font-lock-defaults '((robot-mode-keywords)))
 
   (set (make-local-variable 'comment-start) "#")
   (set (make-local-variable 'comment-start-skip) "#")
@@ -280,3 +351,5 @@ c-basic-offset defines the amount of spaces that are inserted when indenting.
   )
 
 (provide 'robot-mode)
+(add-to-list 'auto-mode-alist '("\\.robot\\'" . robot-mode))
+
