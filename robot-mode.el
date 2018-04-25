@@ -1,5 +1,11 @@
-;; Robot mode
-;; ==========
+;;; robot-mode.el --- A major mode for editing robot framework text files.
+
+;; Author: Sakari Jokinen
+;; Keywords: robot
+;; Package-Requires: ((emacs "24.1"))
+
+;; This file is NOT part of GNU Emacs.
+;;; Commentary:
 ;;
 ;; A major mode for editing robot framework text files.
 ;; Add the following to your .emacs file
@@ -27,6 +33,8 @@
 ;;
 ;; You can participate by sending pull requests to https://github.com/sakari/robot-mode
 
+;;; Code:
+ 
 (require 's)
 
 (defvar robot-keyword-word-separator " " "Character that is used to distinguish words in keywords, underscore or space should be used")
@@ -353,3 +361,4 @@ c-basic-offset defines the amount of spaces that are inserted when indenting.
 (provide 'robot-mode)
 (add-to-list 'auto-mode-alist '("\\.robot\\'" . robot-mode))
 
+;;; robot-mode.el ends here
